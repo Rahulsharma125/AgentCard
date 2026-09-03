@@ -8,8 +8,7 @@ const testAI = async () => {
   try {
     await connectDB();
 
-const result = await runAgent("running shoes");
-    console.log("\nAI RESPONSE:\n");
+const result = await runAgent("I need running shoes under 4000 rupees");    console.log("\nAI RESPONSE:\n");
     console.log(result);
 
     process.exit(0);

@@ -4,6 +4,8 @@ const dotenv = require("dotenv");
 const connectDB = require("./config/db");
 const productRoutes = require("./routes/product.routes");
 const cartRoutes = require("./routes/cart.routes");
+const agentRoutes = require("./routes/agent.routes");
+const paymentRoutes = require("./routes/payment.routes");
 
 dotenv.config();
 
@@ -22,6 +24,8 @@ app.get("/", (req, res) => {
 
 app.use("/api/products", productRoutes);
 app.use("/api/cart", cartRoutes);
+app.use("/api/agent", agentRoutes);
+app.use("/api/payment", paymentRoutes);
 
 const PORT = process.env.PORT || 8000;
 

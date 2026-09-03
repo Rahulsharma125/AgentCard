@@ -1,122 +1,160 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import axios from "axios";
+import "./index.css";
 
 function App() {
-  const [count, setCount] = useState(0)
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
+    const handlePayment = async () => {
+        try {
+
+            // Load Razorpay Checkout
+            const script = document.createElement("script");
+
+            script.src =
+                "https://checkout.razorpay.com/v1/checkout.js";
+
+            script.onload = async () => {
+
+                // Create order from backend
+                const result = await axios.post(
+                    "http://localhost:8000/api/payment/create-order",
+                    {
+                        amount: 4299
+                    }
+                );
+
+                const order = result.data.order;
+
+                // Razorpay checkout options
+                const options = {
+
+                    key: "YOUR_RAZORPAY_KEY_ID",
+
+                    amount: order.amount,
+
+                    currency: order.currency,
+
+                    name: "AgentCart",
+
+                    description:
+                        "AI Commerce Test Payment",
+
+                    order_id: order.id,
+
+                    handler: async function (response) {
+
+                        console.log(
+                            "Razorpay response:",
+                            response
+                        );
+
+                        // Verify payment on backend
+                        const verification =
+                            await axios.post(
+                                "http://localhost:8000/api/payment/verify",
+                                response
+                            );
+
+                        if (verification.data.success) {
+
+                            alert(
+                                "Payment successful and verified! 🎉"
+                            );
+
+                        } else {
+
+                            alert(
+                                "Payment verification failed."
+                            );
+                        }
+                    },
+
+                    theme: {
+                        color: "#635bff"
+                    }
+                };
+
+                const paymentObject =
+                    new window.Razorpay(options);
+
+                paymentObject.open();
+            };
+
+            script.onerror = () => {
+                alert(
+                    "Razorpay SDK failed to load."
+                );
+            };
+
+            document.body.appendChild(script);
+
+        } catch (error) {
+
+            console.error(
+                "Payment error:",
+                error
+            );
+
+            alert(
+                "Something went wrong while creating the payment."
+            );
+        }
+    };
+
+
+    return (
+        <div
+            style={{
+                minHeight: "100vh",
+                background: "#0f1117",
+                color: "white",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center"
+            }}
         >
-          Count is {count}
-        </button>
-      </section>
 
-      <div className="ticks"></div>
+            <div
+                style={{
+                    background: "#181b23",
+                    padding: "40px",
+                    borderRadius: "16px",
+                    textAlign: "center",
+                    width: "400px"
+                }}
+            >
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+                <h1>
+                    AgentCart 🛒
+                </h1>
+
+                <p>
+                    Razorpay Test Payment
+                </p>
+
+                <h2>
+                    ₹4,299
+                </h2>
+
+                <button
+                    onClick={handlePayment}
+                    style={{
+                        padding: "14px 25px",
+                        border: "none",
+                        borderRadius: "10px",
+                        background: "#635bff",
+                        color: "white",
+                        fontWeight: "bold",
+                        fontSize: "16px",
+                        cursor: "pointer"
+                    }}
+                >
+                    Pay ₹4,299
+                </button>
+
+            </div>
+
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    );
 }
 
-export default App
+export default App;
