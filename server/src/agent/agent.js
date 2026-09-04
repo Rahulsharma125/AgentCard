@@ -1,11 +1,10 @@
-require("dotenv").config();
-
 const { GoogleGenAI } = require("@google/genai");
 
 const {
   searchProducts,
   addToCart,
   calculateTotal,
+  clearCart,
   requestCheckout,
   searchProductsTool,
   addToCartTool,
@@ -13,199 +12,655 @@ const {
   requestCheckoutTool,
 } = require("./tools");
 
-// ======================================================
-// GEMINI CONFIGURATION
-// ======================================================
-
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
-// ======================================================
-// SESSION CONTEXT
-// ======================================================
-
-// Stores the last searched products and the last
-// product recommended to each user/session.
 const sessionContext = new Map();
 
-// ======================================================
-// HELPER: CHECK EXPLICIT ADD-TO-CART REQUEST
-// ======================================================
+const createContext = () => ({
+  history: [],
+  lastSearchProducts: [],
+  lastRecommendedProduct: null,
+  checkoutReady: false,
+});
 
-const isAddToCartRequest = (message) => {
-  const text = message.toLowerCase().trim();
+const getContext = (sessionId) => {
+  let context = sessionContext.get(sessionId);
 
-  return (
-    text.includes("add") &&
-    (text.includes("cart") ||
-      text.includes("to my cart") ||
-      text.includes("to the cart"))
-  );
+  if (!context) {
+    context = createContext();
+    sessionContext.set(sessionId, context);
+  }
+
+  return context;
 };
 
-// ======================================================
-// HELPER: FIND PRODUCT FROM USER MESSAGE
-// ======================================================
+const saveHistory = (context, userMessage, assistantMessage) => {
+  context.history.push({
+    role: "user",
+    text: userMessage,
+  });
 
-const findProductInMessage = (message, products) => {
-  if (!products || products.length === 0) {
+  context.history.push({
+    role: "assistant",
+    text: assistantMessage,
+  });
+
+  if (context.history.length > 20) {
+    context.history = context.history.slice(-20);
+  }
+};
+
+/* =====================================================
+   DIRECT COMMAND DETECTION
+===================================================== */
+
+const isCartTotalRequest = (message) => {
+  const text = message.toLowerCase().trim();
+
+  const keywords = [
+    "cart total",
+    "total of my cart",
+    "total in my cart",
+    "how much is my cart",
+    "how much do i have to pay",
+    "how much do i pay",
+    "what is my total",
+    "what's my total",
+    "show cart total",
+  ];
+
+  return keywords.some((keyword) => text.includes(keyword));
+};
+
+const isClearCartRequest = (message) => {
+  const text = message.toLowerCase().trim();
+
+  const commands = [
+    "clear cart",
+    "clear the cart",
+    "empty cart",
+    "empty the cart",
+    "remove everything from cart",
+    "remove all from cart",
+    "delete cart",
+  ];
+
+  return commands.includes(text);
+};
+
+const isCheckoutRequest = (message) => {
+  const text = message.toLowerCase().trim();
+
+  const keywords = [
+    "checkout",
+    "check out",
+    "proceed to checkout",
+    "go to checkout",
+    "buy now",
+    "place my order",
+  ];
+
+  return keywords.some((keyword) => text.includes(keyword));
+};
+
+const isPaymentConfirmation = (message) => {
+  const text = message.toLowerCase().trim();
+
+  const confirmations = [
+    "confirm",
+    "confirm payment",
+    "yes pay",
+    "yes, pay",
+    "pay now",
+    "make payment",
+    "proceed with payment",
+    "proceed to payment",
+    "yes proceed",
+    "yes, proceed",
+    "yes confirm",
+    "yes, confirm",
+  ];
+
+  return confirmations.includes(text);
+};
+
+const isAddConfirmation = (message) => {
+  const text = message.toLowerCase().trim();
+
+  const confirmations = [
+    "yes",
+    "yes please",
+    "yes add it",
+    "yes, add it",
+    "add it",
+    "add that",
+    "add this",
+    "okay add it",
+    "ok add it",
+    "add it to cart",
+    "add that to cart",
+    "add this to cart",
+  ];
+
+  return confirmations.includes(text);
+};
+
+/* =====================================================
+   PRODUCT SEARCH FALLBACK
+===================================================== */
+
+const extractBudget = (message) => {
+  const text = message.toLowerCase();
+
+  const patterns = [
+    /under\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i,
+    /below\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i,
+    /less\s+than\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i,
+    /within\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i,
+    /upto\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i,
+    /up\s*to\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i,
+    /(?:₹|rs\.?|inr)\s*([\d,]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match) {
+      const budget = Number(match[1].replace(/,/g, ""));
+
+      if (!Number.isNaN(budget)) {
+        return budget;
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractSearchQuery = (message) => {
+  let query = message.toLowerCase();
+
+  query = query.replace(/under\s*(?:₹|rs\.?|inr)?\s*[\d,]+/gi, "");
+
+  query = query.replace(/below\s*(?:₹|rs\.?|inr)?\s*[\d,]+/gi, "");
+
+  query = query.replace(/less\s+than\s*(?:₹|rs\.?|inr)?\s*[\d,]+/gi, "");
+
+  query = query.replace(/within\s*(?:₹|rs\.?|inr)?\s*[\d,]+/gi, "");
+
+  query = query.replace(/up\s*to\s*(?:₹|rs\.?|inr)?\s*[\d,]+/gi, "");
+
+  query = query.replace(/upto\s*(?:₹|rs\.?|inr)?\s*[\d,]+/gi, "");
+
+  query = query.replace(/(?:₹|rs\.?|inr)\s*[\d,]+/gi, "");
+
+  const stopWords = [
+    "find",
+    "show",
+    "me",
+    "some",
+    "please",
+    "i",
+    "want",
+    "need",
+    "looking",
+    "for",
+    "give",
+    "get",
+    "search",
+    "searching",
+    "products",
+    "product",
+    "under",
+    "below",
+    "less",
+    "than",
+    "within",
+    "budget",
+    "price",
+    "priced",
+    "around",
+    "with",
+  ];
+
+  const words = query.split(/\s+/).filter(Boolean);
+
+  const filteredWords = words.filter(
+    (word) => !stopWords.includes(word.replace(/[^\w]/g, "")),
+  );
+
+  return filteredWords.join(" ").trim();
+};
+
+const rankProducts = (products, searchQuery) => {
+  const queryWords = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+
+  return [...products].sort((a, b) => {
+    const aText = `${a.name} ${a.description} ${a.category}`.toLowerCase();
+
+    const bText = `${b.name} ${b.description} ${b.category}`.toLowerCase();
+
+    let aScore = 0;
+    let bScore = 0;
+
+    for (const word of queryWords) {
+      if (a.name.toLowerCase().includes(word)) {
+        aScore += 5;
+      }
+
+      if (a.category.toLowerCase().includes(word)) {
+        aScore += 3;
+      }
+
+      if (a.description.toLowerCase().includes(word)) {
+        aScore += 1;
+      }
+
+      if (b.name.toLowerCase().includes(word)) {
+        bScore += 5;
+      }
+
+      if (b.category.toLowerCase().includes(word)) {
+        bScore += 3;
+      }
+
+      if (b.description.toLowerCase().includes(word)) {
+        bScore += 1;
+      }
+    }
+
+    return bScore - aScore;
+  });
+};
+
+const fallbackProductSearch = async (message, sessionId, context) => {
+  console.log("Using backend product search fallback...");
+
+  const budget = extractBudget(message);
+
+  const searchQuery = extractSearchQuery(message);
+
+  console.log(`Fallback search query: "${searchQuery}"`);
+
+  console.log(`Fallback budget: ${budget ?? "none"}`);
+
+  if (!searchQuery) {
     return null;
   }
 
-  const text = message.toLowerCase();
+  let products = await searchProducts(searchQuery);
 
-  // First try exact/full product-name match
-  for (const product of products) {
-    if (text.includes(product.name.toLowerCase())) {
-      return product;
-    }
+  products = products.filter((product) => product.stock > 0);
+
+  if (budget !== null) {
+    products = products.filter((product) => product.price <= budget);
   }
 
-  // Then try matching important words from product name
-  let bestProduct = null;
-  let bestScore = 0;
+  products = rankProducts(products, searchQuery);
 
-  for (const product of products) {
-    const words = product.name
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((word) => word.length > 2);
+  if (products.length === 0) {
+    const finalResponse =
+      budget !== null
+        ? `I couldn't find any in-stock ${searchQuery} products under ₹${budget}.`
+        : `I couldn't find any in-stock products matching "${searchQuery}".`;
 
-    let score = 0;
+    saveHistory(context, message, finalResponse);
 
-    for (const word of words) {
-      if (text.includes(word)) {
-        score++;
-      }
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestProduct = product;
-    }
+    return finalResponse;
   }
 
-  return bestProduct;
+  context.lastSearchProducts = products;
+
+  context.lastRecommendedProduct = products[0];
+
+  let finalResponse = "I found these products:\n\n";
+
+  products.slice(0, 5).forEach((product, index) => {
+    finalResponse += `${index + 1}. ${product.name} - ₹${product.price}\n`;
+  });
+
+  finalResponse += "\nWould you like me to add one to your cart?";
+
+  saveHistory(context, message, finalResponse);
+
+  return finalResponse;
 };
 
-// ======================================================
-// HELPER: FORMAT FINAL AI RESPONSE FOR INR
-// ======================================================
+/* =====================================================
+   CART TOTAL
+===================================================== */
 
-const formatCurrencyResponse = (text) => {
-  if (!text) {
-    return "";
+const handleCartTotal = async (message, sessionId, context) => {
+  console.log("Direct backend command: calculate_total");
+
+  const result = await calculateTotal(sessionId);
+
+  let finalResponse;
+
+  if (!result.success) {
+    finalResponse = result.message;
+  } else {
+    finalResponse = `Your cart total is ₹${result.total}.`;
   }
 
-  // AgentCart uses Indian Rupees only.
-  // If Gemini accidentally writes $, convert it to ₹.
-  return text.replace(/\$/g, "₹");
+  saveHistory(context, message, finalResponse);
+
+  return finalResponse;
 };
 
-// ======================================================
-// RUN AGENT
-// ======================================================
+/* =====================================================
+   CLEAR CART
+===================================================== */
 
-const runAgent = async (userMessage, sessionId = "demo-user-1") => {
+const handleClearCart = async (message, sessionId, context) => {
+  console.log("Direct backend command: clear_cart");
+
+  const result = await clearCart(sessionId);
+
+  const finalResponse = result.message || "Your cart has been cleared.";
+
+  saveHistory(context, message, finalResponse);
+
+  context.lastRecommendedProduct = null;
+
+  context.lastSearchProducts = [];
+
+  context.checkoutReady = false;
+
+  return finalResponse;
+};
+
+/* =====================================================
+   CHECKOUT
+===================================================== */
+
+const handleCheckout = async (message, sessionId, context) => {
+  console.log("Direct backend command: request_checkout");
+
+  const result = await requestCheckout(sessionId);
+
+  if (result.success && result.allowed && result.requiresConfirmation) {
+    context.checkoutReady = true;
+
+    const finalResponse =
+      `Your checkout is ready.\n\n` +
+      `Total: ₹${result.total}\n\n` +
+      `Payment has NOT been made yet.\n` +
+      `Please confirm payment to proceed.`;
+
+    saveHistory(context, message, finalResponse);
+
+    return finalResponse;
+  }
+
+  context.checkoutReady = false;
+
+  const finalResponse = result.message || "Checkout could not be prepared.";
+
+  saveHistory(context, message, finalResponse);
+
+  return finalResponse;
+};
+
+/* =====================================================
+   PAYMENT CONFIRMATION
+===================================================== */
+
+const handlePaymentConfirmation = async (message, sessionId, context) => {
+  console.log(`Payment confirmation received for session: ${sessionId}`);
+
+  /*
+   * IMPORTANT:
+   *
+   * Before allowing payment, verify the cart
+   * again. This protects against:
+   *
+   * - price changes
+   * - stock changes
+   * - invalid cart
+   * - transaction limit
+   */
+
+  const checkoutResult = await requestCheckout(sessionId);
+
+  if (
+    !checkoutResult.success ||
+    !checkoutResult.allowed ||
+    !checkoutResult.requiresConfirmation
+  ) {
+    context.checkoutReady = false;
+
+    const finalResponse =
+      checkoutResult.message ||
+      "Payment cannot proceed because the cart failed safety checks.";
+
+    saveHistory(context, message, finalResponse);
+
+    return finalResponse;
+  }
+
+  /*
+   * Payment approval has been recorded.
+   *
+   * IMPORTANT:
+   * This function does NOT charge the user.
+   *
+   * The frontend will now open Razorpay Checkout.
+   */
+
+  context.checkoutReady = false;
+
+  const finalResponse = {
+    type: "payment_confirmation",
+
+    message: "Payment confirmed. Please proceed to Razorpay checkout.",
+
+    sessionId: sessionId,
+
+    total: checkoutResult.total,
+  };
+
+  saveHistory(context, message, finalResponse.message);
+
+  return finalResponse;
+};
+
+/* =====================================================
+   ADD PRODUCT CONFIRMATION
+===================================================== */
+
+const handleAddConfirmation = async (message, sessionId, context) => {
+  const product = context.lastRecommendedProduct;
+
+  if (!product) {
+    return null;
+  }
+
+  console.log(`Adding remembered product: ${product.name}`);
+
+  const result = await addToCart(sessionId, product._id.toString(), 1);
+
+  if (result.success) {
+    saveHistory(context, message, result.message);
+
+    context.lastRecommendedProduct = null;
+
+    return result.message;
+  }
+
+  return result.message;
+};
+
+/* =====================================================
+   MAIN AGENT
+===================================================== */
+
+const runAgent = async (message, sessionId = "demo-user-1") => {
   try {
-    // ==================================================
-    // 0. GET SESSION CONTEXT
-    // ==================================================
+    const context = getContext(sessionId);
 
-    let context = sessionContext.get(sessionId);
+    const normalizedMessage = message.trim().toLowerCase();
 
-    if (!context) {
-      context = {
-        lastSearchProducts: [],
-        lastRecommendedProduct: null,
-      };
+    /*
+     * 1. PAYMENT CONFIRMATION
+     *
+     * IMPORTANT:
+     * We check payment confirmation BEFORE
+     * normal product searching.
+     *
+     * We also verify the cart again.
+     */
 
-      sessionContext.set(sessionId, context);
-    }
+    if (isPaymentConfirmation(normalizedMessage)) {
+      /*
+       * Only allow payment confirmation
+       * if checkout was prepared.
+       *
+       * If context was lost because of a
+       * server restart, reconstruct it by
+       * checking the cart.
+       */
 
-    // ==================================================
-    // 0A. DIRECT ADD-TO-CART HANDLING
-    // ==================================================
-
-    // If the user explicitly names a product, we first
-    // check whether we already know that product from
-    // a previous search.
-    //
-    // This prevents Gemini from getting confused and
-    // searching for "running shoes" instead of adding
-    // the requested product.
-
-    if (isAddToCartRequest(userMessage)) {
-      const requestedProduct = findProductInMessage(
-        userMessage,
-        context.lastSearchProducts,
-      );
-
-      if (requestedProduct) {
-        console.log(`\nDirect product match: ${requestedProduct.name}`);
-
-        console.log(`Direct add-to-cart: ${requestedProduct.id}`);
-
-        const result = await addToCart(sessionId, requestedProduct.id, 1);
-
-        if (result.success) {
-          return `Done! ${requestedProduct.name} has been added to your cart for ₹${requestedProduct.price}.`;
-        }
-
-        return result.message;
+      if (context.checkoutReady) {
+        return await handlePaymentConfirmation(message, sessionId, context);
       }
 
-      // If the exact product wasn't in previous search
-      // results, allow Gemini to search for it.
-    }
+      /*
+       * Recover checkout state.
+       *
+       * This is useful after a frontend refresh
+       * or backend context reset.
+       */
 
-    // ==================================================
-    // 0B. HANDLE "YES, ADD IT" STYLE REQUESTS
-    // ==================================================
+      const checkoutResult = await requestCheckout(sessionId);
 
-    const lowerMessage = userMessage.toLowerCase().trim();
+      if (
+        checkoutResult.success &&
+        checkoutResult.allowed &&
+        checkoutResult.requiresConfirmation
+      ) {
+        context.checkoutReady = true;
 
-    const isConfirmationAdd =
-      lowerMessage === "yes" ||
-      lowerMessage === "yeah" ||
-      lowerMessage === "yep" ||
-      lowerMessage === "sure" ||
-      lowerMessage === "okay" ||
-      lowerMessage === "ok" ||
-      lowerMessage.includes("yes, add it") ||
-      lowerMessage.includes("yes add it") ||
-      lowerMessage.includes("add it") ||
-      lowerMessage.includes("add that") ||
-      lowerMessage.includes("add this");
-
-    if (isConfirmationAdd && context.lastRecommendedProduct) {
-      const product = context.lastRecommendedProduct;
-
-      console.log(`\nUsing remembered product: ${product.name}`);
-
-      const result = await addToCart(sessionId, product.id, 1);
-
-      if (result.success) {
-        return `Done! ${product.name} has been added to your cart for ₹${product.price}.`;
+        return await handlePaymentConfirmation(message, sessionId, context);
       }
-
-      return result.message;
     }
 
-    // ==================================================
-    // 1. ASK GEMINI
-    // ==================================================
+    /*
+     * 2. CART TOTAL
+     */
+
+    if (isCartTotalRequest(normalizedMessage)) {
+      return await handleCartTotal(message, sessionId, context);
+    }
+
+    /*
+     * 3. CLEAR CART
+     */
+
+    if (isClearCartRequest(normalizedMessage)) {
+      return await handleClearCart(message, sessionId, context);
+    }
+
+    /*
+     * 4. CHECKOUT
+     */
+
+    if (isCheckoutRequest(normalizedMessage)) {
+      return await handleCheckout(message, sessionId, context);
+    }
+
+    /*
+     * 5. ADD PRODUCT CONFIRMATION
+     */
+
+    if (
+      isAddConfirmation(normalizedMessage) &&
+      context.lastRecommendedProduct
+    ) {
+      return await handleAddConfirmation(message, sessionId, context);
+    }
+
+    /* =================================================
+           GEMINI
+        ================================================= */
+
+    console.log("Sending request to Gemini...");
+
+    const systemInstruction = `
+You are AgentCart AI, an AI shopping assistant.
+
+Your job is to help users discover products and prepare
+safe purchases.
+
+RULES:
+
+1. Use search_products when the user is looking for products.
+
+2. Only recommend products that actually exist in the
+AgentCart catalog.
+
+3. Respect user requirements such as price limits,
+categories and product type.
+
+4. Use add_to_cart only when the user explicitly asks
+to add a specific product.
+
+5. Use calculate_total when the user asks about their
+cart total.
+
+6. Use request_checkout when the user wants to checkout.
+
+7. request_checkout NEVER makes a payment.
+
+8. Payment ALWAYS requires explicit user confirmation.
+
+9. NEVER claim that a payment was completed unless the
+backend confirms it.
+
+10. Never invent product names, prices or stock.
+
+11. Keep responses concise and natural.
+
+12. If the user asks for products under a budget,
+do not recommend products above that budget.
+
+13. When recommending a product, clearly mention its
+name and price.
+
+14. When checkout is ready, tell the user the total and
+that confirmation is required.
+
+15. Never directly perform a payment.
+
+16. Never create a fake product.
+
+17. Never claim success for a backend operation unless the
+backend tool actually returned success.
+`;
+
+    const userPrompt = `
+User message:
+${message}
+
+Session ID:
+${sessionId}
+
+Previous conversation:
+${context.history
+  .slice(-10)
+  .map((item) => `${item.role}: ${item.text}`)
+  .join("\n")}
+`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash-lite",
+      model: "gemini-3.6-flash",
 
-      contents: userMessage,
+      contents: userPrompt,
 
       config: {
-        // ==================================================
-        // TOOLS
-        // ==================================================
+        systemInstruction,
 
         tools: [
           {
@@ -217,530 +672,205 @@ const runAgent = async (userMessage, sessionId = "demo-user-1") => {
             ],
           },
         ],
-
-        // ==================================================
-        // AGENT INSTRUCTIONS
-        // ==================================================
-
-        systemInstruction: `
-You are AgentCart, an AI shopping assistant.
-
-Your job is to help users discover products, manage their cart,
-calculate totals, and prepare checkout safely.
-
-CURRENCY:
-----------
-AgentCart operates in India.
-
-ALL product prices, cart totals, transaction amounts,
-budgets, and payment amounts are in Indian Rupees (INR).
-
-Always display Indian currency using the ₹ symbol.
-
-NEVER use:
-- $
-- USD
-- dollars
-- US dollars
-
-For example:
-Correct: ₹3,799
-Correct: ₹17,194
-Wrong: $3,799
-Wrong: $17,194
-Wrong: USD 17,194
-
-AVAILABLE TOOLS:
-
-1. search_products
-2. add_to_cart
-3. calculate_total
-4. request_checkout
-
-
-IMPORTANT TOOL RULES:
-
-PRODUCT SEARCH
---------------
-
-If the user asks to:
-
-- find a product
-- search for a product
-- show products
-- recommend products
-- find something under a budget
-
-YOU MUST use search_products.
-
-
-PRODUCT RECOMMENDATIONS
------------------------
-
-Only recommend products returned by search_products.
-
-Never invent:
-
-- products
-- prices
-- stock information
-
-
-ADD TO CART
------------
-
-If the user explicitly asks to add a product to the cart,
-use add_to_cart.
-
-If you do not know the exact productId:
-
-1. Use search_products first.
-2. Find the requested product in the search results.
-3. Use the exact productId returned by search_products.
-4. Then call add_to_cart.
-
-Never invent a productId.
-
-Never claim that something was added unless add_to_cart
-returns success: true.
-
-
-CART TOTAL
-----------
-
-If the user asks:
-
-- What is my cart total?
-- How much is my cart?
-- What is the total?
-- How much do I need to pay?
-
-use calculate_total.
-
-Always use the tool for the current total.
-
-Never calculate the current cart total from memory.
-
-When reporting the result:
-
-- Use ₹ for Indian Rupees.
-- Do not use $.
-- Do not use USD.
-- Do not use dollars.
-
-Example:
-
-"The current cart total is ₹17,194."
-
-CHECKOUT
---------
-
-If the user says:
-
-- checkout
-- I want to checkout
-- proceed to checkout
-- ready to pay
-- buy now
-- proceed with my purchase
-- take me to payment
-
-YOU MUST call request_checkout.
-
-request_checkout does NOT make a payment.
-
-It only:
-
-1. Gets the current cart
-2. Calculates the current total
-3. Checks safety policies
-4. Prepares a checkout summary
-
-
-PAYMENT SAFETY
---------------
-
-You cannot directly make payments.
-
-You cannot directly charge the user.
-
-You cannot claim payment was completed.
-
-Explicit user confirmation is required before payment.
-
-Never bypass the Policy Engine.
-
-
-CHECKOUT RESPONSE
------------------
-
-If request_checkout returns:
-
-allowed: true
-
-Tell the user:
-
-- what they are buying
-- quantity
-- current price
-- total in ₹
-- that safety checks passed
-- that confirmation is required before payment
-
-If request_checkout returns:
-
-allowed: false
-
-Explain why checkout was blocked.
-
-Do not tell the user that payment was successful.
-
-
-PRICE CHANGES
--------------
-
-If the Policy Engine reports a price change,
-tell the user that the price changed and that
-they need to review the new amount before payment.
-
-
-STOCK
------
-
-Never recommend or purchase products that are out of stock.
-
-
-BUDGET
-------
-
-If the user provides a budget, respect it.
-
-Do not recommend products above the user's stated budget
-unless clearly explaining that they exceed the budget.
-
-
-GENERAL
--------
-
-Be concise, friendly, and helpful.
-
-Never invent information.
-
-Never bypass safety checks.
-
-Always use Indian Rupees (₹) for money values.
-`,
       },
     });
 
-    // ==================================================
-    // 2. CHECK IF GEMINI CALLED A TOOL
-    // ==================================================
+    const functionCalls = response.functionCalls || [];
 
-    const functionCalls = response.functionCalls;
+    /*
+     * NORMAL GEMINI RESPONSE
+     */
 
-    // No tool call
-    if (!functionCalls || functionCalls.length === 0) {
-      return formatCurrencyResponse(response.text);
+    if (functionCalls.length === 0) {
+      const finalResponse =
+        response.text || "Sorry, I could not generate a response.";
+
+      saveHistory(context, message, finalResponse);
+
+      return finalResponse;
     }
 
-    console.log(
-      "\nGemini requested:",
-      functionCalls.map((call) => call.name).join(", "),
-    );
-
-    // Store tool responses
-    const functionResponses = [];
-
-    // ==================================================
-    // 3. EXECUTE TOOL CALLS
-    // ==================================================
+    /*
+     * GEMINI TOOL CALLS
+     */
 
     for (const call of functionCalls) {
-      // ==================================================
-      // SEARCH PRODUCTS
-      // ==================================================
+      console.log(`Gemini tool call: ${call.name}`);
+
+      /*
+       * SEARCH PRODUCTS
+       */
 
       if (call.name === "search_products") {
-        const query = call.args.query;
+        const result = await searchProducts(call.args.query);
 
-        console.log(`\nAI called search_products("${query}")`);
+        context.lastSearchProducts = result;
 
-        const products = await searchProducts(query);
+        if (result.length === 0) {
+          const finalResponse =
+            "I couldn't find any products matching your request.";
 
-        const productData = products.map((product) => ({
-          id: product._id.toString(),
-          name: product.name,
-          description: product.description,
-          price: product.price,
-          category: product.category,
-          stock: product.stock,
-        }));
+          saveHistory(context, message, finalResponse);
 
-        // ----------------------------------------------
-        // SAVE SEARCH RESULTS IN SESSION
-        // ----------------------------------------------
+          return finalResponse;
+        }
 
-        context.lastSearchProducts = productData;
+        context.lastRecommendedProduct = result[0];
 
-        // Clear old recommendation because we have
-        // started a new search.
-        context.lastRecommendedProduct = null;
+        let finalResponse = "I found these products:\n\n";
 
-        sessionContext.set(sessionId, context);
-
-        functionResponses.push({
-          name: call.name,
-
-          response: {
-            products: productData,
-          },
-
-          id: call.id,
+        result.slice(0, 5).forEach((product, index) => {
+          finalResponse += `${index + 1}. ${product.name} - ₹${product.price}\n`;
         });
+
+        finalResponse += "\nWould you like me to add one to your cart?";
+
+        saveHistory(context, message, finalResponse);
+
+        return finalResponse;
       }
 
-      // ==================================================
-      // ADD TO CART
-      // ==================================================
-      else if (call.name === "add_to_cart") {
-        const productId = call.args.productId;
+      /*
+       * ADD TO CART
+       */
 
-        const quantity = call.args.quantity || 1;
+      if (call.name === "add_to_cart") {
+        const result = await addToCart(
+          sessionId,
+          call.args.productId,
+          call.args.quantity || 1,
+        );
 
-        console.log(`\nAI called add_to_cart("${productId}", ${quantity})`);
+        saveHistory(context, message, result.message);
 
-        const result = await addToCart(sessionId, productId, quantity);
-
-        functionResponses.push({
-          name: call.name,
-
-          response: result,
-
-          id: call.id,
-        });
+        return result.message;
       }
 
-      // ==================================================
-      // CALCULATE TOTAL
-      // ==================================================
-      else if (call.name === "calculate_total") {
-        console.log("\nAI called calculate_total()");
+      /*
+       * CALCULATE TOTAL
+       */
 
+      if (call.name === "calculate_total") {
         const result = await calculateTotal(sessionId);
 
-        functionResponses.push({
-          name: call.name,
+        let finalResponse;
 
-          response: result,
+        if (!result.success) {
+          finalResponse = result.message;
+        } else {
+          finalResponse = `Your cart total is ₹${result.total}.`;
+        }
 
-          id: call.id,
-        });
+        saveHistory(context, message, finalResponse);
+
+        return finalResponse;
       }
 
-      // ==================================================
-      // REQUEST CHECKOUT
-      // ==================================================
-      else if (call.name === "request_checkout") {
-        console.log("\nAI called request_checkout()");
+      /*
+       * REQUEST CHECKOUT
+       */
+
+      if (call.name === "request_checkout") {
+        console.log("Processing checkout request...");
 
         const result = await requestCheckout(sessionId);
 
-        functionResponses.push({
-          name: call.name,
+        if (result.success && result.allowed && result.requiresConfirmation) {
+          context.checkoutReady = true;
+        } else {
+          context.checkoutReady = false;
+        }
 
-          response: result,
+        let finalResponse;
 
-          id: call.id,
-        });
-      }
+        if (result.success && result.allowed) {
+          finalResponse =
+            `Your checkout is ready.\n\n` +
+            `Total: ₹${result.total}\n\n` +
+            `Payment has NOT been made yet. ` +
+            `Please confirm payment to proceed.`;
+        } else {
+          finalResponse = result.message;
+        }
 
-      // ==================================================
-      // UNKNOWN TOOL
-      // ==================================================
-      else {
-        console.log(`Unknown tool requested: ${call.name}`);
+        saveHistory(context, message, finalResponse);
 
-        functionResponses.push({
-          name: call.name,
-
-          response: {
-            success: false,
-            message: "Unknown tool",
-          },
-
-          id: call.id,
-        });
+        return finalResponse;
       }
     }
 
-    // ==================================================
-    // 4. CONTINUE SAME GEMINI CONVERSATION
-    // ==================================================
+    return "I couldn't complete that request.";
+  } catch (error) {
+    console.error("Agent error:", error.message);
 
-    const contents = [
-      // Original user message
-      {
-        role: "user",
+    /*
+     * GEMINI 429 FALLBACK
+     */
 
-        parts: [
-          {
-            text: userMessage,
-          },
-        ],
-      },
+    if (
+      error.status === 429 ||
+      error.message?.includes("429") ||
+      error.message?.includes("RESOURCE_EXHAUSTED") ||
+      error.message?.includes("quota")
+    ) {
+      console.log("Gemini quota exceeded. Using backend fallback...");
 
-      // Preserve Gemini's COMPLETE response.
-      //
-      // Important for Gemini function calling because
-      // thought signatures must be preserved.
-      response.candidates[0].content,
+      const context = getContext(sessionId);
 
-      // Tool results
-      {
-        role: "user",
+      const fallbackResult = await fallbackProductSearch(
+        message,
+        sessionId,
+        context,
+      );
 
-        parts: functionResponses.map((result) => ({
-          functionResponse: result,
-        })),
-      },
-    ];
-
-    // ==================================================
-    // 5. ASK GEMINI FOR FINAL RESPONSE
-    // ==================================================
-
-    const finalResponse = await ai.models.generateContent({
-      model: "gemini-3.5-flash-lite",
-
-      contents,
-
-      config: {
-        systemInstruction: `
-You are AgentCart, an AI shopping assistant.
-
-Use the tool results to provide the final response.
-
-CURRENCY RULE:
---------------
-
-AgentCart uses Indian Rupees (INR).
-
-Every monetary value MUST use the ₹ symbol.
-
-NEVER write:
-- $
-- USD
-- dollars
-- US dollars
-
-For example:
-
-Correct:
-₹3,799
-₹999
-₹17,194
-
-Incorrect:
-$3,799
-$999
-$17,194
-USD 17,194
-
-RULES:
-
-1. Never invent products.
-
-2. Never invent prices.
-
-3. Never invent stock information.
-
-4. Respect the user's budget.
-
-5. If search_products returned products,
-   recommend only those products.
-
-6. If add_to_cart returned success: true,
-   tell the user the product was added.
-
-7. If add_to_cart returned success: false,
-   clearly explain why it failed.
-
-8. If calculate_total returned success: true,
-   show the current cart total using ₹.
-
-9. If calculate_total says the cart is empty,
-   tell the user the cart is empty.
-
-10. If request_checkout returned allowed: true,
-    show the checkout summary and tell the user
-    that confirmation is required before payment.
-
-11. If request_checkout returned allowed: false,
-    explain why checkout was blocked.
-
-12. Never claim that payment was completed.
-
-13. Never claim that an order was completed.
-
-14. request_checkout does NOT make a payment.
-
-15. Keep the response concise and friendly.
-
-16. All prices and totals must be displayed in Indian Rupees (₹).
-`,
-      },
-    });
-
-    // ==================================================
-    // 6. REMEMBER RECOMMENDED PRODUCT
-    // ==================================================
-
-    const finalText = finalResponse.text || "";
-
-    const products = context.lastSearchProducts || [];
-
-    let recommendedProduct = null;
-    let earliestIndex = Infinity;
-
-    // Find the first product name mentioned in the AI
-    // response. This becomes the product associated
-    // with "yes", "add it", etc.
-    for (const product of products) {
-      const index = finalText.toLowerCase().indexOf(product.name.toLowerCase());
-
-      if (index !== -1 && index < earliestIndex) {
-        earliestIndex = index;
-        recommendedProduct = product;
+      if (fallbackResult) {
+        return fallbackResult;
       }
-    }
 
-    if (recommendedProduct) {
-      context.lastRecommendedProduct = recommendedProduct;
-
-      sessionContext.set(sessionId, context);
-
-      console.log(
-        `\nRemembering recommended product: ${recommendedProduct.name}`,
+      return (
+        "The AI assistant is temporarily rate-limited. " +
+        "Please try a product search such as " +
+        '"Find running shoes under ₹4000".'
       );
     }
-
-    // ==================================================
-    // 7. RETURN FINAL AI RESPONSE
-    // ==================================================
-
-    return formatCurrencyResponse(finalText);
-  } catch (error) {
-    console.error("\nAI Agent error:", error);
 
     return "Sorry, I could not process your request.";
   }
 };
 
-// ======================================================
-// EXPORT
-// ======================================================
+/* =====================================================
+   CHECKOUT ROUTE FUNCTION
+===================================================== */
+
+const checkout = async (sessionId) => {
+  try {
+    const result = await requestCheckout(sessionId);
+
+    const context = getContext(sessionId);
+
+    if (result.success && result.allowed && result.requiresConfirmation) {
+      context.checkoutReady = true;
+    } else {
+      context.checkoutReady = false;
+    }
+
+    sessionContext.set(sessionId, context);
+
+    return result;
+  } catch (error) {
+    console.error("Checkout error:", error.message);
+
+    return {
+      success: false,
+
+      allowed: false,
+
+      message: "Checkout verification failed. Payment has been blocked.",
+    };
+  }
+};
 
 module.exports = {
   runAgent,
+  requestCheckout: checkout,
 };
