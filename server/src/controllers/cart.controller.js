@@ -12,6 +12,13 @@ const addToCart = async (req, res) => {
       });
     }
 
+    if (quantity < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Quantity must be at least 1",
+      });
+    }
+
     const product = await Product.findById(productId);
 
     if (!product) {
@@ -24,7 +31,7 @@ const addToCart = async (req, res) => {
     if (product.stock < quantity) {
       return res.status(400).json({
         success: false,
-        message: "Not enough stock available",
+        message: `Only ${product.stock} units of ${product.name} are available`,
       });
     }
 
@@ -37,6 +44,7 @@ const addToCart = async (req, res) => {
           {
             product: productId,
             quantity,
+            priceSnapshot: product.price,
           },
         ],
       });
@@ -46,11 +54,24 @@ const addToCart = async (req, res) => {
       );
 
       if (existingItem) {
-        existingItem.quantity += quantity;
+        const newQuantity = existingItem.quantity + quantity;
+
+        if (newQuantity > product.stock) {
+          return res.status(400).json({
+            success: false,
+            message: `Only ${product.stock} units of ${product.name} are available`,
+          });
+        }
+
+        existingItem.quantity = newQuantity;
+
+        // Keep the original price snapshot.
+        // This allows us to detect a later price change.
       } else {
         cart.items.push({
           product: productId,
           quantity,
+          priceSnapshot: product.price,
         });
       }
 
@@ -61,12 +82,15 @@ const addToCart = async (req, res) => {
       "items.product",
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
+      message: `${product.name} added to cart successfully`,
       cart: updatedCart,
     });
   } catch (error) {
-    res.status(500).json({
+    console.error("Add to cart error:", error.message);
+
+    return res.status(500).json({
       success: false,
       message: "Failed to add product to cart",
       error: error.message,
@@ -90,14 +114,52 @@ const getCart = async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       cart,
     });
   } catch (error) {
-    res.status(500).json({
+    console.error("Get cart error:", error.message);
+
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch cart",
+      error: error.message,
+    });
+  }
+};
+
+const clearCart = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const cart = await Cart.findOneAndDelete({ sessionId });
+
+    if (!cart) {
+      return res.status(200).json({
+        success: true,
+        message: "Cart is already empty",
+        cart: {
+          sessionId,
+          items: [],
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Cart cleared successfully",
+      cart: {
+        sessionId,
+        items: [],
+      },
+    });
+  } catch (error) {
+    console.error("Clear cart error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to clear cart",
       error: error.message,
     });
   }
@@ -106,4 +168,5 @@ const getCart = async (req, res) => {
 module.exports = {
   addToCart,
   getCart,
+  clearCart,
 };

@@ -7,7 +7,6 @@ const {
   addToCart,
   calculateTotal,
   requestCheckout,
-
   searchProductsTool,
   addToCartTool,
   calculateTotalTool,
@@ -23,11 +22,177 @@ const ai = new GoogleGenAI({
 });
 
 // ======================================================
+// SESSION CONTEXT
+// ======================================================
+
+// Stores the last searched products and the last
+// product recommended to each user/session.
+const sessionContext = new Map();
+
+// ======================================================
+// HELPER: CHECK EXPLICIT ADD-TO-CART REQUEST
+// ======================================================
+
+const isAddToCartRequest = (message) => {
+  const text = message.toLowerCase().trim();
+
+  return (
+    text.includes("add") &&
+    (text.includes("cart") ||
+      text.includes("to my cart") ||
+      text.includes("to the cart"))
+  );
+};
+
+// ======================================================
+// HELPER: FIND PRODUCT FROM USER MESSAGE
+// ======================================================
+
+const findProductInMessage = (message, products) => {
+  if (!products || products.length === 0) {
+    return null;
+  }
+
+  const text = message.toLowerCase();
+
+  // First try exact/full product-name match
+  for (const product of products) {
+    if (text.includes(product.name.toLowerCase())) {
+      return product;
+    }
+  }
+
+  // Then try matching important words from product name
+  let bestProduct = null;
+  let bestScore = 0;
+
+  for (const product of products) {
+    const words = product.name
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((word) => word.length > 2);
+
+    let score = 0;
+
+    for (const word of words) {
+      if (text.includes(word)) {
+        score++;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestProduct = product;
+    }
+  }
+
+  return bestProduct;
+};
+
+// ======================================================
+// HELPER: FORMAT FINAL AI RESPONSE FOR INR
+// ======================================================
+
+const formatCurrencyResponse = (text) => {
+  if (!text) {
+    return "";
+  }
+
+  // AgentCart uses Indian Rupees only.
+  // If Gemini accidentally writes $, convert it to ₹.
+  return text.replace(/\$/g, "₹");
+};
+
+// ======================================================
 // RUN AGENT
 // ======================================================
 
 const runAgent = async (userMessage, sessionId = "demo-user-1") => {
   try {
+    // ==================================================
+    // 0. GET SESSION CONTEXT
+    // ==================================================
+
+    let context = sessionContext.get(sessionId);
+
+    if (!context) {
+      context = {
+        lastSearchProducts: [],
+        lastRecommendedProduct: null,
+      };
+
+      sessionContext.set(sessionId, context);
+    }
+
+    // ==================================================
+    // 0A. DIRECT ADD-TO-CART HANDLING
+    // ==================================================
+
+    // If the user explicitly names a product, we first
+    // check whether we already know that product from
+    // a previous search.
+    //
+    // This prevents Gemini from getting confused and
+    // searching for "running shoes" instead of adding
+    // the requested product.
+
+    if (isAddToCartRequest(userMessage)) {
+      const requestedProduct = findProductInMessage(
+        userMessage,
+        context.lastSearchProducts,
+      );
+
+      if (requestedProduct) {
+        console.log(`\nDirect product match: ${requestedProduct.name}`);
+
+        console.log(`Direct add-to-cart: ${requestedProduct.id}`);
+
+        const result = await addToCart(sessionId, requestedProduct.id, 1);
+
+        if (result.success) {
+          return `Done! ${requestedProduct.name} has been added to your cart for ₹${requestedProduct.price}.`;
+        }
+
+        return result.message;
+      }
+
+      // If the exact product wasn't in previous search
+      // results, allow Gemini to search for it.
+    }
+
+    // ==================================================
+    // 0B. HANDLE "YES, ADD IT" STYLE REQUESTS
+    // ==================================================
+
+    const lowerMessage = userMessage.toLowerCase().trim();
+
+    const isConfirmationAdd =
+      lowerMessage === "yes" ||
+      lowerMessage === "yeah" ||
+      lowerMessage === "yep" ||
+      lowerMessage === "sure" ||
+      lowerMessage === "okay" ||
+      lowerMessage === "ok" ||
+      lowerMessage.includes("yes, add it") ||
+      lowerMessage.includes("yes add it") ||
+      lowerMessage.includes("add it") ||
+      lowerMessage.includes("add that") ||
+      lowerMessage.includes("add this");
+
+    if (isConfirmationAdd && context.lastRecommendedProduct) {
+      const product = context.lastRecommendedProduct;
+
+      console.log(`\nUsing remembered product: ${product.name}`);
+
+      const result = await addToCart(sessionId, product.id, 1);
+
+      if (result.success) {
+        return `Done! ${product.name} has been added to your cart for ₹${product.price}.`;
+      }
+
+      return result.message;
+    }
+
     // ==================================================
     // 1. ASK GEMINI
     // ==================================================
@@ -38,7 +203,10 @@ const runAgent = async (userMessage, sessionId = "demo-user-1") => {
       contents: userMessage,
 
       config: {
-        // Give Gemini access to all AgentCart tools
+        // ==================================================
+        // TOOLS
+        // ==================================================
+
         tools: [
           {
             functionDeclarations: [
@@ -60,6 +228,28 @@ You are AgentCart, an AI shopping assistant.
 Your job is to help users discover products, manage their cart,
 calculate totals, and prepare checkout safely.
 
+CURRENCY:
+----------
+AgentCart operates in India.
+
+ALL product prices, cart totals, transaction amounts,
+budgets, and payment amounts are in Indian Rupees (INR).
+
+Always display Indian currency using the ₹ symbol.
+
+NEVER use:
+- $
+- USD
+- dollars
+- US dollars
+
+For example:
+Correct: ₹3,799
+Correct: ₹17,194
+Wrong: $3,799
+Wrong: $17,194
+Wrong: USD 17,194
+
 AVAILABLE TOOLS:
 
 1. search_products
@@ -69,7 +259,6 @@ AVAILABLE TOOLS:
 
 
 IMPORTANT TOOL RULES:
-
 
 PRODUCT SEARCH
 --------------
@@ -103,8 +292,12 @@ ADD TO CART
 If the user explicitly asks to add a product to the cart,
 use add_to_cart.
 
-Before using add_to_cart, make sure you know the exact
-productId returned by search_products.
+If you do not know the exact productId:
+
+1. Use search_products first.
+2. Find the requested product in the search results.
+3. Use the exact productId returned by search_products.
+4. Then call add_to_cart.
 
 Never invent a productId.
 
@@ -128,6 +321,16 @@ Always use the tool for the current total.
 
 Never calculate the current cart total from memory.
 
+When reporting the result:
+
+- Use ₹ for Indian Rupees.
+- Do not use $.
+- Do not use USD.
+- Do not use dollars.
+
+Example:
+
+"The current cart total is ₹17,194."
 
 CHECKOUT
 --------
@@ -144,15 +347,13 @@ If the user says:
 
 YOU MUST call request_checkout.
 
-DO NOT simply say that you cannot process checkout.
-
 request_checkout does NOT make a payment.
 
 It only:
 
 1. Gets the current cart
 2. Calculates the current total
-3. Checks the safety policies
+3. Checks safety policies
 4. Prepares a checkout summary
 
 
@@ -163,7 +364,7 @@ You cannot directly make payments.
 
 You cannot directly charge the user.
 
-You cannot claim that payment was completed.
+You cannot claim payment was completed.
 
 Explicit user confirmation is required before payment.
 
@@ -182,10 +383,9 @@ Tell the user:
 - what they are buying
 - quantity
 - current price
-- total
+- total in ₹
 - that safety checks passed
 - that confirmation is required before payment
-
 
 If request_checkout returns:
 
@@ -227,6 +427,8 @@ Be concise, friendly, and helpful.
 Never invent information.
 
 Never bypass safety checks.
+
+Always use Indian Rupees (₹) for money values.
 `,
       },
     });
@@ -239,7 +441,7 @@ Never bypass safety checks.
 
     // No tool call
     if (!functionCalls || functionCalls.length === 0) {
-      return response.text;
+      return formatCurrencyResponse(response.text);
     }
 
     console.log(
@@ -268,17 +470,24 @@ Never bypass safety checks.
 
         const productData = products.map((product) => ({
           id: product._id.toString(),
-
           name: product.name,
-
           description: product.description,
-
           price: product.price,
-
           category: product.category,
-
           stock: product.stock,
         }));
+
+        // ----------------------------------------------
+        // SAVE SEARCH RESULTS IN SESSION
+        // ----------------------------------------------
+
+        context.lastSearchProducts = productData;
+
+        // Clear old recommendation because we have
+        // started a new search.
+        context.lastRecommendedProduct = null;
+
+        sessionContext.set(sessionId, context);
 
         functionResponses.push({
           name: call.name,
@@ -357,7 +566,6 @@ Never bypass safety checks.
 
           response: {
             success: false,
-
             message: "Unknown tool",
           },
 
@@ -382,12 +590,10 @@ Never bypass safety checks.
         ],
       },
 
-      // IMPORTANT:
       // Preserve Gemini's COMPLETE response.
       //
-      // This is important for Gemini 3 function
-      // calling because thought signatures must
-      // be preserved.
+      // Important for Gemini function calling because
+      // thought signatures must be preserved.
       response.candidates[0].content,
 
       // Tool results
@@ -415,6 +621,32 @@ You are AgentCart, an AI shopping assistant.
 
 Use the tool results to provide the final response.
 
+CURRENCY RULE:
+--------------
+
+AgentCart uses Indian Rupees (INR).
+
+Every monetary value MUST use the ₹ symbol.
+
+NEVER write:
+- $
+- USD
+- dollars
+- US dollars
+
+For example:
+
+Correct:
+₹3,799
+₹999
+₹17,194
+
+Incorrect:
+$3,799
+$999
+$17,194
+USD 17,194
+
 RULES:
 
 1. Never invent products.
@@ -425,43 +657,81 @@ RULES:
 
 4. Respect the user's budget.
 
-5. If add_to_cart returned success: true,
+5. If search_products returned products,
+   recommend only those products.
+
+6. If add_to_cart returned success: true,
    tell the user the product was added.
 
-6. If add_to_cart returned success: false,
+7. If add_to_cart returned success: false,
    clearly explain why it failed.
 
-7. If calculate_total returned success: true,
-   show the current cart total.
+8. If calculate_total returned success: true,
+   show the current cart total using ₹.
 
-8. If calculate_total says the cart is empty,
+9. If calculate_total says the cart is empty,
    tell the user the cart is empty.
 
-9. If request_checkout returned allowed: true,
-   show the checkout summary and tell the user
-   that confirmation is required before payment.
+10. If request_checkout returned allowed: true,
+    show the checkout summary and tell the user
+    that confirmation is required before payment.
 
-10. If request_checkout returned allowed: false,
+11. If request_checkout returned allowed: false,
     explain why checkout was blocked.
 
-11. Never claim that payment was completed.
+12. Never claim that payment was completed.
 
-12. Never claim that an order was completed.
+13. Never claim that an order was completed.
 
-13. request_checkout does NOT make a payment.
+14. request_checkout does NOT make a payment.
 
-14. Keep the response concise and friendly.
+15. Keep the response concise and friendly.
+
+16. All prices and totals must be displayed in Indian Rupees (₹).
 `,
       },
     });
 
     // ==================================================
-    // 6. RETURN FINAL AI RESPONSE
+    // 6. REMEMBER RECOMMENDED PRODUCT
     // ==================================================
 
-    return finalResponse.text;
+    const finalText = finalResponse.text || "";
+
+    const products = context.lastSearchProducts || [];
+
+    let recommendedProduct = null;
+    let earliestIndex = Infinity;
+
+    // Find the first product name mentioned in the AI
+    // response. This becomes the product associated
+    // with "yes", "add it", etc.
+    for (const product of products) {
+      const index = finalText.toLowerCase().indexOf(product.name.toLowerCase());
+
+      if (index !== -1 && index < earliestIndex) {
+        earliestIndex = index;
+        recommendedProduct = product;
+      }
+    }
+
+    if (recommendedProduct) {
+      context.lastRecommendedProduct = recommendedProduct;
+
+      sessionContext.set(sessionId, context);
+
+      console.log(
+        `\nRemembering recommended product: ${recommendedProduct.name}`,
+      );
+    }
+
+    // ==================================================
+    // 7. RETURN FINAL AI RESPONSE
+    // ==================================================
+
+    return formatCurrencyResponse(finalText);
   } catch (error) {
-    console.error("\nAI Agent error:", error.message);
+    console.error("\nAI Agent error:", error);
 
     return "Sorry, I could not process your request.";
   }

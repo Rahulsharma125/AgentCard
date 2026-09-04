@@ -1,34 +1,18 @@
 const Product = require("../models/Product");
 
-// ======================================================
-// POLICY CONFIGURATION
-// ======================================================
-
 const POLICY = {
   MAX_TRANSACTION_AMOUNT: 5000,
   MAX_ITEMS: 10,
 };
 
-// ======================================================
-// CHECK CART POLICY
-// ======================================================
-
 const checkCartPolicy = async (cartData) => {
   try {
-    // --------------------------------------------------
-    // 1. Check cart exists
-    // --------------------------------------------------
-
     if (!cartData || !cartData.items) {
       return {
         allowed: false,
         reason: "Cart does not exist",
       };
     }
-
-    // --------------------------------------------------
-    // 2. Check empty cart
-    // --------------------------------------------------
 
     if (cartData.items.length === 0) {
       return {
@@ -37,9 +21,9 @@ const checkCartPolicy = async (cartData) => {
       };
     }
 
-    // --------------------------------------------------
-    // 3. Check maximum number of items
-    // --------------------------------------------------
+    // -----------------------------------
+    // 1. Maximum quantity check
+    // -----------------------------------
 
     let totalQuantity = 0;
 
@@ -50,26 +34,24 @@ const checkCartPolicy = async (cartData) => {
     if (totalQuantity > POLICY.MAX_ITEMS) {
       return {
         allowed: false,
-
         reason: `Cart contains ${totalQuantity} items. Maximum allowed is ${POLICY.MAX_ITEMS}.`,
       };
     }
 
-    // --------------------------------------------------
-    // 4. Check transaction amount
-    // --------------------------------------------------
+    // -----------------------------------
+    // 2. Maximum transaction amount check
+    // -----------------------------------
 
     if (cartData.total > POLICY.MAX_TRANSACTION_AMOUNT) {
       return {
         allowed: false,
-
         reason: `Transaction amount ₹${cartData.total} exceeds the maximum allowed amount of ₹${POLICY.MAX_TRANSACTION_AMOUNT}.`,
       };
     }
 
-    // --------------------------------------------------
-    // 5. Verify products and stock
-    // --------------------------------------------------
+    // -----------------------------------
+    // 3. Product validation
+    // -----------------------------------
 
     for (const item of cartData.items) {
       const product = await Product.findById(item.productId);
@@ -77,38 +59,51 @@ const checkCartPolicy = async (cartData) => {
       if (!product) {
         return {
           allowed: false,
-
           reason: "A product in the cart no longer exists.",
         };
       }
 
-      // Check current stock
+      // -----------------------------------
+      // 4. Stock validation
+      // -----------------------------------
+
       if (product.stock < item.quantity) {
         return {
           allowed: false,
-
           reason: `${product.name} does not have enough stock.`,
         };
       }
 
-      // --------------------------------------------------
-      // Price verification
-      // --------------------------------------------------
+      // -----------------------------------
+      // 5. Price change validation
+      // -----------------------------------
 
-      if (product.price !== item.price) {
+      if (
+        item.priceSnapshot !== undefined &&
+        item.priceSnapshot !== product.price
+      ) {
         return {
           allowed: false,
 
           priceChanged: true,
 
-          reason: `The price of ${product.name} has changed from ₹${item.price} to ₹${product.price}. Please review the new total before payment.`,
+          reason:
+            `The price of ${product.name} has changed from ` +
+            `₹${item.priceSnapshot} to ₹${product.price}. ` +
+            `Please review the new total before payment.`,
+
+          productId: product._id.toString(),
+
+          oldPrice: item.priceSnapshot,
+
+          newPrice: product.price,
         };
       }
     }
 
-    // --------------------------------------------------
-    // 6. Everything passed
-    // --------------------------------------------------
+    // -----------------------------------
+    // All policies passed
+    // -----------------------------------
 
     return {
       allowed: true,
@@ -119,11 +114,6 @@ const checkCartPolicy = async (cartData) => {
     };
   } catch (error) {
     console.error("Policy engine error:", error.message);
-
-    // IMPORTANT:
-    // Fail closed.
-    // If the policy engine itself fails,
-    // payment must NOT continue.
 
     return {
       allowed: false,

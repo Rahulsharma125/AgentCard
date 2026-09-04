@@ -1,13 +1,14 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+
+dotenv.config();
+
 const connectDB = require("./config/db");
 const productRoutes = require("./routes/product.routes");
 const cartRoutes = require("./routes/cart.routes");
 const agentRoutes = require("./routes/agent.routes");
 const paymentRoutes = require("./routes/payment.routes");
-
-dotenv.config();
 
 const app = express();
 

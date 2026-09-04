@@ -1,32 +1,29 @@
 const express = require("express");
 
-const { runAgent } = require("../agent/agent");
+const { requestCheckout } = require("../agent/tools");
 
 const router = express.Router();
 
-router.post("/chat", async (req, res) => {
+router.post("/checkout", async (req, res) => {
   try {
-    const { message, sessionId = "demo-user-1" } = req.body;
+    const { sessionId } = req.body;
 
-    if (!message) {
+    if (!sessionId) {
       return res.status(400).json({
         success: false,
-        message: "Message is required",
+        message: "sessionId is required",
       });
     }
 
-    const response = await runAgent(message, sessionId);
+    const result = await requestCheckout(sessionId);
 
-    res.status(200).json({
-      success: true,
-      response,
-    });
+    return res.status(200).json(result);
   } catch (error) {
-    console.error("Agent API error:", error.message);
+    console.error("Agent checkout route error:", error.message);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "AI agent failed",
+      message: "Checkout request failed",
     });
   }
 });

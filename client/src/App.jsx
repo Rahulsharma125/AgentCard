@@ -1,157 +1,168 @@
+import { useState } from "react";
 import axios from "axios";
 import "./index.css";
 
 function App() {
+    const [message, setMessage] = useState("");
+    const [messages, setMessages] = useState([
+        {
+            role: "ai",
+            text: "Hi! 👋 I'm AgentCart AI. What are you looking for today?"
+        }
+    ]);
+    const [loading, setLoading] = useState(false);
 
-    const handlePayment = async () => {
+    const sendMessage = async () => {
+        if (!message.trim() || loading) return;
+
+        const userMessage = message.trim();
+
+        setMessages((prev) => [
+            ...prev,
+            {
+                role: "user",
+                text: userMessage
+            }
+        ]);
+
+        setMessage("");
+        setLoading(true);
+
         try {
+            const response = await axios.post(
+                "http://localhost:8000/api/agent/chat",
+                {
+                    message: userMessage,
+                    sessionId: "demo-user-1"
+                }
+            );
 
-            // Load Razorpay Checkout
-            const script = document.createElement("script");
-
-            script.src =
-                "https://checkout.razorpay.com/v1/checkout.js";
-
-            script.onload = async () => {
-
-                // Create order from backend
-                const result = await axios.post(
-                    "http://localhost:8000/api/payment/create-order",
-                    {
-                        amount: 4299
-                    }
-                );
-
-                const order = result.data.order;
-
-                // Razorpay checkout options
-                const options = {
-
-                    key: "YOUR_RAZORPAY_KEY_ID",
-
-                    amount: order.amount,
-
-                    currency: order.currency,
-
-                    name: "AgentCart",
-
-                    description:
-                        "AI Commerce Test Payment",
-
-                    order_id: order.id,
-
-                    handler: async function (response) {
-
-                        console.log(
-                            "Razorpay response:",
-                            response
-                        );
-
-                        // Verify payment on backend
-                        const verification =
-                            await axios.post(
-                                "http://localhost:8000/api/payment/verify",
-                                response
-                            );
-
-                        if (verification.data.success) {
-
-                            alert(
-                                "Payment successful and verified! 🎉"
-                            );
-
-                        } else {
-
-                            alert(
-                                "Payment verification failed."
-                            );
-                        }
-                    },
-
-                    theme: {
-                        color: "#635bff"
-                    }
-                };
-
-                const paymentObject =
-                    new window.Razorpay(options);
-
-                paymentObject.open();
-            };
-
-            script.onerror = () => {
-                alert(
-                    "Razorpay SDK failed to load."
-                );
-            };
-
-            document.body.appendChild(script);
-
+            setMessages((prev) => [
+                ...prev,
+                {
+                    role: "ai",
+                    text: response.data.response
+                }
+            ]);
         } catch (error) {
+            console.error("Agent error:", error);
 
-            console.error(
-                "Payment error:",
-                error
-            );
-
-            alert(
-                "Something went wrong while creating the payment."
-            );
+            setMessages((prev) => [
+                ...prev,
+                {
+                    role: "ai",
+                    text: "Sorry, something went wrong. Please try again."
+                }
+            ]);
+        } finally {
+            setLoading(false);
         }
     };
 
+    const handleKeyDown = (e) => {
+        if (e.key === "Enter") {
+            sendMessage();
+        }
+    };
 
     return (
-        <div
-            style={{
-                minHeight: "100vh",
-                background: "#0f1117",
-                color: "white",
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center"
-            }}
-        >
+        <div className="app">
 
-            <div
-                style={{
-                    background: "#181b23",
-                    padding: "40px",
-                    borderRadius: "16px",
-                    textAlign: "center",
-                    width: "400px"
-                }}
-            >
+            <header className="header">
+                <h1>AgentCart 🛒</h1>
+                <p>AI-powered commerce with safe payments</p>
+            </header>
 
-                <h1>
-                    AgentCart 🛒
-                </h1>
+            <main className="container">
 
-                <p>
-                    Razorpay Test Payment
-                </p>
+                <div className="agent-card">
 
-                <h2>
-                    ₹4,299
-                </h2>
+                    <h2>AI Shopping Assistant</h2>
 
-                <button
-                    onClick={handlePayment}
-                    style={{
-                        padding: "14px 25px",
-                        border: "none",
-                        borderRadius: "10px",
-                        background: "#635bff",
-                        color: "white",
-                        fontWeight: "bold",
-                        fontSize: "16px",
-                        cursor: "pointer"
-                    }}
-                >
-                    Pay ₹4,299
-                </button>
+                    <div className="chat-box">
 
-            </div>
+                        {messages.map((msg, index) => (
+                            <div
+                                key={index}
+                                className={
+                                    msg.role === "user"
+                                        ? "user-message"
+                                        : "ai-message"
+                                }
+                            >
+                                {msg.text}
+                            </div>
+                        ))}
+
+                        {loading && (
+                            <div className="ai-message">
+                                Thinking...
+                            </div>
+                        )}
+
+                    </div>
+
+                    <div className="input-area">
+
+                        <input
+                            type="text"
+                            placeholder="Try: Find running shoes under ₹4000"
+                            value={message}
+                            onChange={(e) =>
+                                setMessage(e.target.value)
+                            }
+                            onKeyDown={handleKeyDown}
+                        />
+
+                        <button
+                            onClick={sendMessage}
+                            disabled={loading}
+                        >
+                            Send
+                        </button>
+
+                    </div>
+
+                    <div className="suggestions">
+
+                        <button
+                            className="suggestion"
+                            onClick={() =>
+                                setMessage(
+                                    "Find running shoes under ₹4000"
+                                )
+                            }
+                        >
+                            Running shoes
+                        </button>
+
+                        <button
+                            className="suggestion"
+                            onClick={() =>
+                                setMessage(
+                                    "Find headphones under ₹2500"
+                                )
+                            }
+                        >
+                            Headphones
+                        </button>
+
+                        <button
+                            className="suggestion"
+                            onClick={() =>
+                                setMessage(
+                                    "Show me fitness products"
+                                )
+                            }
+                        >
+                            Fitness
+                        </button>
+
+                    </div>
+
+                </div>
+
+            </main>
 
         </div>
     );

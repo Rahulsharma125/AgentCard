@@ -13,10 +13,15 @@ const cartItemSchema = new mongoose.Schema(
       required: true,
       min: 1,
     },
+
+    // Price of the product when it was added to the cart
+    priceSnapshot: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
   },
-  {
-    _id: false,
-  },
+  { _id: false },
 );
 
 const cartSchema = new mongoose.Schema(
@@ -29,9 +34,7 @@ const cartSchema = new mongoose.Schema(
 
     items: [cartItemSchema],
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
 const Cart = mongoose.model("Cart", cartSchema);
