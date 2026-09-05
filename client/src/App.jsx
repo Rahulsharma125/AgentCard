@@ -16,7 +16,9 @@ function App() {
 
     // Razorpay public TEST key
     const RAZORPAY_KEY_ID =
-        import.meta.env.VITE_RAZORPAY_KEY_ID;
+    import.meta.env.VITE_RAZORPAY_KEY_ID?.trim();
+
+console.log("VITE_RAZORPAY_KEY_ID:", RAZORPAY_KEY_ID);
 
     // Load Razorpay Checkout script
     const loadRazorpayScript = () => {
