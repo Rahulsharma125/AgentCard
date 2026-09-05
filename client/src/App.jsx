@@ -109,7 +109,7 @@ function App() {
             // Create order through backend
             const orderResponse =
                 await axios.post(
-                    "http://localhost:8000/api/payment/create-order",
+                    "https://agentcard-1.onrender.com/api/payment/create-order",
                     {
                         sessionId: sessionId
                     }
@@ -189,7 +189,7 @@ function App() {
                         // Verify payment
                         const verifyResponse =
                             await axios.post(
-                                "http://localhost:8000/api/payment/verify",
+                                "https://agentcard-1.onrender.com/api/payment/verify",
                                 {
                                     sessionId:
                                         sessionId,
@@ -340,7 +340,7 @@ function App() {
         try {
             const response =
                 await axios.post(
-                    "http://localhost:8000/api/agent/chat",
+                    "https://agentcard-1.onrender.com/api/agent/chat",
                     {
                         message:
                             userMessage,
